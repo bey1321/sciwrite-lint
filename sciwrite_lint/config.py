@@ -433,6 +433,11 @@ class LintConfig(BaseModel):
         "vllm"  # "vllm" (8B FP8 container, default) or "transformers" (2B subprocess)
     )
     vision_device: str = "auto"  # "auto", "cpu", "cuda" (transformers backend only)
+    # OpenAI-compatible endpoint + model for the "vllm" vision backend.
+    # Defaults target the local vision-vLLM container; point them at a hosted
+    # endpoint (e.g. OpenRouter + a vision-language model) to run without a GPU.
+    vision_endpoint: str = "http://localhost:5002/v1"
+    vision_model: str = ""  # empty = local served name (qwen3-vl-8b-fp8)
     # Server admission ceiling for the vision-vLLM container. Passed as
     # Server-side admission ceiling — passed to the vision vLLM
     # container as ``--max-num-seqs``. See the matching docstring on
@@ -631,7 +636,71 @@ def find_config(start: Path | None = None) -> Path | None:
         current = parent
 
 
+# Environment variables (or a ``.env`` file) that override the TOML config.
+# Lets each person keep their own key and model choice out of shared files.
+ENV_OVERRIDES: dict[str, str] = {
+    "SCIWRITE_LLM_ENDPOINT": "llm_endpoint",
+    "SCIWRITE_LLM_MODEL": "llm_model",
+    "SCIWRITE_VISION_ENDPOINT": "vision_endpoint",
+    "SCIWRITE_VISION_MODEL": "vision_model",
+    "SCIWRITE_VISION_BACKEND": "vision_backend",
+}
+
+
+def load_dotenv(start: Path | None = None) -> Path | None:
+    """Load ``KEY=VALUE`` lines from the nearest ``.env`` file.
+
+    Searches ``start`` (default: the current directory) and then each parent
+    directory, and loads the first ``.env`` found. Variables already set in the
+    environment are kept (the shell wins over the file). Blank lines and
+    ``#`` comments are ignored; values may be quoted and lines may start with
+    ``export``. No external dependency. Returns the file loaded, if any.
+    """
+    import os
+
+    here = (start or Path.cwd()).resolve()
+    for folder in (here, *here.parents):
+        env_file = folder / ".env"
+        if not env_file.is_file():
+            continue
+        for raw in env_file.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip().removeprefix("export ").strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            elif " #" in value:  # trailing inline comment on an unquoted value
+                value = value.split(" #", 1)[0].rstrip()
+            os.environ.setdefault(key, value)
+        return env_file
+    return None
+
+
+def apply_env_overrides(config: LintConfig) -> LintConfig:
+    """Override config fields from ``SCIWRITE_*`` environment variables."""
+    import os
+
+    for var, field in ENV_OVERRIDES.items():
+        value = os.environ.get(var, "").strip()
+        if value:
+            setattr(config, field, value)
+    return config
+
+
 def load_config(path: Path | None = None) -> LintConfig:
+    """Load configuration: TOML file, then ``.env`` / environment overrides.
+
+    Precedence (highest first): shell environment, ``.env`` file,
+    ``.sciwrite-lint.toml``, built-in defaults. See ``ENV_OVERRIDES``.
+    """
+    load_dotenv(path.parent if path else None)
+    return apply_env_overrides(_load_config_from_toml(path))
+
+
+def _load_config_from_toml(path: Path | None = None) -> LintConfig:
     """Load configuration from a TOML file, or use defaults.
 
     If path is None, searches for .sciwrite-lint.toml via find_config().
@@ -768,6 +837,10 @@ def load_config(path: Path | None = None) -> LintConfig:
     vision = data.get("vision", {})
     if "backend" in vision:
         config.vision_backend = vision["backend"]
+    if "endpoint" in vision:
+        config.vision_endpoint = vision["endpoint"]
+    if "model" in vision:
+        config.vision_model = vision["model"]
     if "device" in vision:
         config.vision_device = vision["device"]
     if "max_concurrency" in vision:

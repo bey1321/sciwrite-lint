@@ -1,5 +1,9 @@
 # sciwrite-lint
 
+> **MERIT fork.** This copy runs the internal-consistency and figure checks through OpenRouter, so no GPU is needed, and adds test kits for measuring them.
+> **Start here: [merit/README.md](merit/README.md)** for step-by-step setup and usage.
+> Everything below is the original project's README.
+
 [![arXiv](https://img.shields.io/badge/arXiv-2604.08501-b31b1b.svg)](https://arxiv.org/abs/2604.08501)
 
 A linter for scientific manuscripts. Checks that your references exist, your metadata is accurate, your citations support the claims you make, and your cited papers' own bibliographies are real. Works on LaTeX and PDF. Runs entirely on your machine. Produces a **SciLint Score**.

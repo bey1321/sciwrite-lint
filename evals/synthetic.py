@@ -516,7 +516,17 @@ def run_synthetic_eval(
     from evals.synthetic_generators import generate_cases
 
     cases = generate_cases(checks)
-    config = LintConfig()
+    from sciwrite_lint.config import load_config
+
+    config = load_config()  # honour .sciwrite-lint.toml (e.g. hosted LLM endpoint)
+    if checks:
+        # Mirror `sciwrite-lint check --checks`: run only the requested
+        # checks instead of every LLM check on each synthetic paper.
+        from sciwrite_lint.checks.registry import ensure_checks_loaded, list_checks
+
+        ensure_checks_loaded()
+        known = {m.id for m in list_checks()}
+        config.disabled_rules = config.disabled_rules | (known - set(checks))
     result = EvalResult()
     _llm_result_cache.clear()
 

@@ -1,0 +1,12 @@
+# Shared settings for the MERIT fork - safe to commit (no keys, no model names).
+# Personal settings (API key, models, endpoints) come from .env - see .env.example.
+# sciwrite-lint finds this file by searching upward from the current folder,
+# so it applies to everything inside the repository.
+
+[llm]
+max_concurrency = 2               # stay under OpenRouter's 20 requests/minute
+
+[vision]
+backend = "vllm"                  # OpenAI-style API path (no local vision model needed)
+max_concurrency = 2
+dynamic_concurrency = false       # turns off a status check that only works with local vLLM

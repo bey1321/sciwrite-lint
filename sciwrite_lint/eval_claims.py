@@ -23,8 +23,9 @@ from sciwrite_lint.config import LintConfig
 from sciwrite_lint.llm_utils import (
     _VLLM_RETRIES,
     VLLM_DEFAULT_MODEL,
-    VLLM_MODELS,
     extract_json as _extract_json,
+    get_model_config,
+    llm_api_key,
     retry_on_empty,
 )
 from sciwrite_lint.schemas import (
@@ -1151,16 +1152,13 @@ async def verify_claim_vllm(
     from openai import AsyncOpenAI
 
     config = config or LintConfig()
-    model_cfg = VLLM_MODELS.get(
-        model_name or config.llm_model or VLLM_DEFAULT_MODEL,
-        VLLM_MODELS[VLLM_DEFAULT_MODEL],
-    )
+    model_cfg = get_model_config(config, model_name)
 
     own_client = client is None
     if own_client:
         client = AsyncOpenAI(
             base_url=config.llm_endpoint,
-            api_key="dummy",
+            api_key=llm_api_key(),
             timeout=config.llm_timeout,
         )
     assert client is not None  # narrowing for mypy
@@ -1693,7 +1691,7 @@ async def run_claim_verification(
 
     vllm_model = model or config.llm_model or VLLM_DEFAULT_MODEL
     model_id = f"vllm:{vllm_model}"
-    logger.info(f"Backend: vLLM ({VLLM_MODELS[vllm_model]['model']})")
+    logger.info(f"Backend: LLM ({get_model_config(config, vllm_model)['model']})")
 
     ref_paths: dict[str, Path | None] = {}
     ref_types: dict[str, str] = {}
@@ -1916,7 +1914,7 @@ async def run_claim_verification(
 
             async with AsyncOpenAI(
                 base_url=config.llm_endpoint,
-                api_key="dummy",
+                api_key=llm_api_key(),
                 timeout=config.llm_timeout,
             ) as vllm_client:
                 await asyncio.gather(

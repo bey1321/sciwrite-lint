@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from typing import Any, Literal, overload
 
@@ -81,11 +82,35 @@ SMALL_PROMPT_CONCURRENCY = 100
 MEDIUM_PROMPT_CONCURRENCY = 50
 
 
+def llm_api_key() -> str:
+    """API key for the LLM endpoint.
+
+    Local vLLM ignores the key, so the default stays ``"dummy"``. Set
+    ``SCIWRITE_LLM_API_KEY`` (or ``OPENROUTER_API_KEY``) in the environment or
+    in a ``.env`` file to use a hosted endpoint such as OpenRouter.
+    """
+    from sciwrite_lint.config import load_dotenv
+
+    load_dotenv()
+    return (
+        os.environ.get("SCIWRITE_LLM_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+        or "dummy"
+    )
+
+
 def get_model_config(config: LintConfig | None = None, model_name: str = "") -> dict:
-    """Resolve vLLM model configuration from config or explicit name."""
+    """Resolve model configuration from config or explicit name.
+
+    Known short names (``qwen3``, ``gemma3``) map to the local vLLM served
+    names. Any other value (e.g. ``qwen/qwen3-8b`` on OpenRouter) is sent
+    verbatim as the model id, with Qwen3 sampling defaults.
+    """
     config = config or LintConfig()
     key = model_name or config.llm_model or VLLM_DEFAULT_MODEL
-    return VLLM_MODELS.get(key, VLLM_MODELS[VLLM_DEFAULT_MODEL])
+    if key in VLLM_MODELS:
+        return VLLM_MODELS[key]
+    return {"model": key, **_SAMPLING[VLLM_DEFAULT_MODEL]}
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +363,7 @@ async def llm_query(
     if own_client:
         client = AsyncOpenAI(
             base_url=config.llm_endpoint,
-            api_key="dummy",
+            api_key=llm_api_key(),
             timeout=config.llm_timeout,
         )
     assert client is not None  # narrowing for mypy
@@ -426,6 +451,9 @@ async def llm_query(
                 kw["reasoning_effort"] = preset["effort"]
             else:
                 kw["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            if "openrouter.ai" in config.llm_endpoint:
+                # Route only to providers that honour response_format=json_schema.
+                kw["extra_body"]["provider"] = {"require_parameters": True}
             return kw
 
         def _record_call(
@@ -700,7 +728,7 @@ async def llm_query_batch(
     config = config or LintConfig()
     client = AsyncOpenAI(
         base_url=config.llm_endpoint,
-        api_key="dummy",
+        api_key=llm_api_key(),
         timeout=config.llm_timeout,
     )
 

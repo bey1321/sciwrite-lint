@@ -17,3 +17,8 @@ evals/calibration_data/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# MERIT fork: per-run workspaces and generated test papers
+references/
+merit/kits/*/papers/*.tex
+merit/kits/*/expected.json

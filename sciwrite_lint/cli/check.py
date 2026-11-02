@@ -490,6 +490,74 @@ def run_check_pdf(pdf_path: Path, config: LintConfig, fmt: str) -> int:
     return 0 if not any(f.level == "error" for f in findings) else 1
 
 
+_FIGURE_CHECKS = (
+    "caption-vs-content",
+    "text-vs-figure",
+    "axis-label-consistency",
+    "figure-data-vs-table",
+)
+
+
+def _quick_vision(tex_path: Path, config: LintConfig) -> list[Finding]:
+    """Describe a quick-mode manuscript's figures when figure checks are on.
+
+    Quick mode normally skips the vision stage, so the figure checks see
+    "FIGURE DESCRIPTIONS: Not available." and silently report nothing.
+    This runs the vision pipeline into a per-file workspace
+    (``quick-<stem>``) and sets ``config.current_paper`` so the LLM checks
+    load the cached descriptions. Returns a warning finding when no
+    descriptions could be produced, so a silent pass is never mistaken
+    for a clean result.
+    """
+    wanted = [c for c in _FIGURE_CHECKS if c not in config.disabled_rules]
+    if not wanted:
+        return []
+
+    paper = f"quick-{tex_path.stem}"
+    config.current_paper = paper
+    descriptions = ""
+    try:
+        import contextlib
+        import sys
+
+        from sciwrite_lint.vision.pipeline import run_vision_pipeline
+
+        # The vision code prints a VISION_RUN_STATS marker meant for a
+        # parent process; keep stdout clean for ``--format json``.
+        with contextlib.redirect_stdout(sys.stderr):
+            descriptions = run_vision_pipeline(
+                tex_path, config, paper_name=paper, device=config.vision_device
+            )
+    except Exception as e:  # noqa: BLE001 — surface as a finding, keep checking
+        logger.error("Vision step failed for {}: {}", tex_path.name, e)
+
+    try:
+        from sciwrite_lint.vision.image_extraction import extract_images_from_latex
+
+        n_figures = len(extract_images_from_latex(tex_path))
+    except Exception:  # noqa: BLE001 — count is only used for the message
+        n_figures = 0
+    n_described = descriptions.count("Visual content: ")
+
+    if n_figures and n_described >= n_figures:
+        return []
+    if n_figures == 0 and not descriptions:
+        detail = "no raster figures (PNG/JPG) were found"
+    else:
+        detail = f"only {n_described} of {n_figures} figure(s) were described"
+    return [
+        Finding(
+            level="warning",
+            rule_id="vision-unavailable",
+            message=(
+                f"Figure descriptions incomplete for {tex_path.name}: {detail}; "
+                f"{', '.join(wanted)} may have missed issues. Rerun to retry."
+            ),
+            file=tex_path.name,
+        )
+    ]
+
+
 def run_check_quick(
     args: argparse.Namespace,
     config: LintConfig,
@@ -523,12 +591,16 @@ def run_check_quick(
         if tex_path.suffix.lower() == ".md":
             build_markdown_context(tex_path, config)
 
+        vision_findings = _quick_vision(tex_path, config)
         findings = run_text_checks(tex_path, config)
         try:
             findings.extend(asyncio.run(pipeline_llm_batched(tex_path, config)))
         except SciWriteLintError as e:
             logger.error(f"Tool error: {e}")
             return 2
+        finally:
+            config.current_paper = ""
+        findings.extend(vision_findings)
 
         label = f"{name} ({tex_path.name})" if name != tex_path.stem else tex_path.name
         format_findings(findings, label, fmt=fmt, color=config.color)

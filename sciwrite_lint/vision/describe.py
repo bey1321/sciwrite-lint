@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from sciwrite_lint.config import LintConfig
 from loguru import logger
 
-from sciwrite_lint.llm_utils import _VLLM_RETRIES
+from sciwrite_lint.llm_utils import _VLLM_RETRIES, llm_api_key
 from sciwrite_lint.schemas import vllm_schema_unbounded
 from sciwrite_lint.vision.cache import (
     VisionResult,
@@ -596,7 +596,11 @@ def _describe_images_vllm(
 
         from sciwrite_lint.llm.concurrency_optimizer import concurrency_slot
 
-        endpoint = f"http://localhost:{_VLLM_VISION_PORT}/v1"
+        endpoint = (config.vision_endpoint if config else "") or (
+            f"http://localhost:{_VLLM_VISION_PORT}/v1"
+        )
+        vision_model = (config.vision_model if config else "") or _VLLM_VISION_MODEL
+        headers = {"Authorization": f"Bearer {llm_api_key()}"}
         results: list[str | None] = [None] * len(image_paths)
         # Schema-constrained decode is ~3× slower than free-form on
         # this hardware (each token goes through xgrammar on CPU,
@@ -647,7 +651,7 @@ def _describe_images_vllm(
             idx: int, path: Path, b64: str, mime: str, prompt: str
         ) -> None:
             payload = {
-                "model": _VLLM_VISION_MODEL,
+                "model": vision_model,
                 "messages": [
                     {
                         "role": "user",
@@ -665,6 +669,9 @@ def _describe_images_vllm(
             }
             if response_format is not None:
                 payload["response_format"] = response_format
+            if "openrouter.ai" in endpoint:
+                # Route only to providers that honour response_format.
+                payload["provider"] = {"require_parameters": True}
 
             # Unified retry budget covers both content errors
             # (empty/invalid JSON) and transient HTTP/network errors
@@ -673,7 +680,9 @@ def _describe_images_vllm(
             # soft-fails one figure rather than crashing the whole
             # asyncio.gather (which would lose all in-flight peers).
             async with _slot():
-                async with httpx.AsyncClient(timeout=request_timeout) as client:
+                async with httpx.AsyncClient(
+                    timeout=request_timeout, headers=headers
+                ) as client:
                     for _attempt in range(_VLLM_RETRIES + 1):
                         try:
                             resp = await client.post(
@@ -908,8 +917,9 @@ def describe_figures(
 
     if backend == "vllm":
         logger.info(
-            "Running VL inference via vLLM ({}, {} images)",
-            _VLLM_VISION_MODEL,
+            "Running VL inference via {} ({}, {} images)",
+            (config.vision_endpoint if config else "") or "vLLM",
+            (config.vision_model if config else "") or _VLLM_VISION_MODEL,
             len(new_images),
         )
         raw_outputs = _describe_images_vllm(paths, prompts, config=config)
@@ -946,9 +956,21 @@ def describe_figures(
             for desc in text_outputs
         ]
 
-    # Save to workspace.db
+    # Save to workspace.db. Skip failed (empty) descriptions so a transient
+    # error — e.g. a hosted endpoint's rate limit — is retried on the next
+    # run instead of being cached as an empty description forever.
     if references_dir:
-        update_cache(new_images, all_results, references_dir, source=source)
+        ok = [(img, r) for img, r in zip(new_images, all_results) if r.description]
+        if len(ok) < len(new_images):
+            logger.warning(
+                "{} of {} figure(s) got no description; not caching them",
+                len(new_images) - len(ok),
+                len(new_images),
+            )
+        if ok:
+            update_cache(
+                [img for img, _ in ok], [r for _, r in ok], references_dir, source=source
+            )
 
     # Format all descriptions (cached + newly inferred)
     if references_dir:
