@@ -11,6 +11,10 @@ Usage:
 
 The flattened file stays in the same folder as main.tex, so figure paths in
 \\includegraphics keep working.
+
+LaTeX comments are removed by default (use --keep-comments to keep them).
+sciwrite-lint's figure extraction does not skip comments, so a commented-out
+figure would otherwise be described and checked as if it were in the paper.
 """
 
 from __future__ import annotations
@@ -39,7 +43,9 @@ def resolve(name: str, base: Path) -> Path | None:
     return None
 
 
-def flatten(tex: Path, root: Path, seen: set[Path], missing: list[str]) -> str:
+def flatten(
+    tex: Path, root: Path, seen: set[Path], missing: list[str], keep_comments: bool = False
+) -> str:
     """Return tex's text with every \\input/\\include/\\subfile expanded in place."""
     if tex in seen:  # guard against include loops
         return ""
@@ -48,7 +54,11 @@ def flatten(tex: Path, root: Path, seen: set[Path], missing: list[str]) -> str:
     for line in tex.read_text(encoding="utf-8", errors="replace").splitlines():
         code = strip_comment(line)
         if not INCLUDE_RE.search(code):
-            out.append(line)
+            if keep_comments:
+                out.append(line)
+            elif code.strip() or not line.strip():
+                out.append(code.rstrip())
+            # else: a comment-only line - drop it
             continue
 
         def expand(m: re.Match[str]) -> str:
@@ -56,7 +66,7 @@ def flatten(tex: Path, root: Path, seen: set[Path], missing: list[str]) -> str:
             if target is None:
                 missing.append(m.group(2))
                 return m.group(0)
-            body = flatten(target, root, seen, missing)
+            body = flatten(target, root, seen, missing, keep_comments)
             if m.group(1) == "subfile":  # keep only the subfile's document body
                 inner = re.search(r"\\begin\{document\}(.*)\\end\{document\}", body, re.S)
                 body = inner.group(1) if inner else body
@@ -70,6 +80,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Merge \\input/\\include files into one .tex")
     ap.add_argument("main", type=Path, help="the paper's main .tex file")
     ap.add_argument("-o", "--output", type=Path, help="output file (default: <main>_flat.tex)")
+    ap.add_argument("--keep-comments", action="store_true", help="keep LaTeX %% comments")
     args = ap.parse_args()
 
     main_tex = args.main.resolve()
@@ -77,7 +88,7 @@ def main() -> int:
         print(f"Not found: {args.main}")
         return 1
     missing: list[str] = []
-    text = flatten(main_tex, main_tex.parent, set(), missing)
+    text = flatten(main_tex, main_tex.parent, set(), missing, args.keep_comments)
     out = args.output or main_tex.with_name(main_tex.stem + "_flat.tex")
     out.write_text(text, encoding="utf-8")
     print(f"Wrote {out}")
