@@ -13,7 +13,7 @@ The original tool needs an NVIDIA GPU with 16 GB of memory to run its language m
 6. [Connection test](#6-connection-test)
 7. [Run the test kits](#7-run-the-test-kits)
 8. [Read the results](#8-read-the-results)
-9. [Check your own paper](#9-check-your-own-paper)
+9. [Check a real paper](#9-check-a-real-paper)
 10. [Add your own test cases](#10-add-your-own-test-cases)
 11. [Troubleshooting](#11-troubleshooting)
 12. [What was changed, and limitations](#12-what-was-changed-and-limitations)
@@ -198,13 +198,40 @@ In the findings CSV, `message` and `context` are written **by the language model
 
 Language models give slightly different answers between runs. Repeat a run 2–3 times before trusting a result, and always report the model name.
 
-## 9. Check your own paper
+## 9. Check a real paper
 
+**Use the LaTeX source, not the PDF.** PDFs need GROBID, a separate Docker container, and in this fork the figure checks don't run on PDFs. They report nothing.
+
+**1. Download the source from arXiv.** On the paper's arXiv page, choose **TeX Source**, or use the paper ID:
 ```bash
-sciwrite-lint check path/to/paper.tex --checks numbers-vs-tables,sample-size-consistency
-sciwrite-lint check path/to/paper.tex --checks caption-vs-content,text-vs-figure --format json > out.json
+mkdir -p ~/papers/2401.12345 && cd ~/papers/2401.12345
+wget -O src.tar.gz https://arxiv.org/e-print/2401.12345
+if [ -n "$(tar tzf src.tar.gz 2>/dev/null)" ]; then tar xzf src.tar.gz; else gunzip -c src.tar.gz > main.tex; fi
 ```
-- Figure checks only read **PNG/JPG** images included with `\includegraphics`. PDF, EPS and SVG figures are skipped, and you will see a `vision-unavailable` warning for them.
+(Most papers are an archive of files; a few are a single gzipped `.tex`. The last line handles both.)
+
+**2. Find the main file:** the one with `\begin{document}`.
+```bash
+grep -l '\\begin{document}' *.tex
+```
+
+**3. Merge it into one file.** sciwrite-lint does **not** follow `\input{}` / `\include{}`, so sections in separate files are invisible to it, and labels defined there cause false `dangling-ref` errors. Most arXiv papers are split this way:
+```bash
+python ~/projects/sciwrite-lint/merit/flatten_tex.py main.tex     # writes main_flat.tex
+```
+
+**4. Run the checks** from inside the repository folder, so your `.env` and `.sciwrite-lint.toml` are found:
+```bash
+cd ~/projects/sciwrite-lint
+sciwrite-lint check ~/papers/2401.12345/main_flat.tex --checks numbers-vs-tables,sample-size-consistency
+sciwrite-lint check ~/papers/2401.12345/main_flat.tex --checks caption-vs-content,text-vs-figure --format json > out.json
+```
+
+**5. Test with a planted error.** Copy `main_flat.tex`, change one thing (a number in the abstract, a value in a table), and check that the right check fires on the copy but not on the original. Findings on the unchanged original are either real problems in the paper or false alarms. Read them and decide.
+
+Notes:
+- Figure checks only read **PNG/JPG** images included with `\includegraphics`. PDF, EPS and SVG figures (common on arXiv) are skipped, and you will see a `vision-unavailable` warning. Pick papers with PNG/JPG figures for figure tests.
+- Very long papers (roughly 50+ pages) skip the LLM checks.
 - `sciwrite-lint checks` lists all check ids.
 - **Privacy:** the paper's text and figures are sent to OpenRouter and the model provider. Only use published papers, or papers whose authors agree.
 
